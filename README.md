@@ -65,6 +65,8 @@ ruff check .
 
 测试不连接 Telegram，使用临时 SQLite 和 fake gateway 覆盖 code 解析、Logical Message 折叠、双向搜索、分类优先级、Hash 传递连通、merge 调度和 expected deletion。
 
+项目的重要架构决策记录在 [`docs/adr/`](docs/adr/README.md)。现有 ADR 根据 Git 历史、实现和项目负责人补充说明进行历史重建。
+
 ## 运行边界
 
 - 这是单进程实现；不要同时启动两个实例共享同一个 SQLite 文件。
