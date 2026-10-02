@@ -1,0 +1,18 @@
+services:
+  t4by:
+    build:
+      context: .
+    image: t4by:local
+    env_file:
+      - .env
+    volumes:
+      - t4by-data:/app/data
+    ports:
+      - "127.0.0.1:9464:9464"
+    init: true
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  t4by-data:
