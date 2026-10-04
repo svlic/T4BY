@@ -145,15 +145,27 @@ class Application:
                 return
             await self.manual.enqueue(logical, target)
 
-        @self.writer_client.on(events.Album(chats=[chats.up, chats.blacklist]))
+        @self.writer_client.on(events.Album(chats=[chats.repeat, chats.up, chats.blacklist]))
         async def manual_album(event: events.Album.Event) -> None:
-            target = Bucket.UP if event.chat_id == chats.up else Bucket.BLACKLIST
+            target = (
+                Bucket.REPEAT
+                if event.chat_id == chats.repeat
+                else Bucket.UP
+                if event.chat_id == chats.up
+                else Bucket.BLACKLIST
+            )
             await manual_event(event.messages, target)
 
-        @self.writer_client.on(events.NewMessage(chats=[chats.up, chats.blacklist]))
+        @self.writer_client.on(events.NewMessage(chats=[chats.repeat, chats.up, chats.blacklist]))
         async def manual_single(event: events.NewMessage.Event) -> None:
             if event.message.grouped_id is None and event.message.fwd_from:
-                target = Bucket.UP if event.chat_id == chats.up else Bucket.BLACKLIST
+                target = (
+                    Bucket.REPEAT
+                    if event.chat_id == chats.repeat
+                    else Bucket.UP
+                    if event.chat_id == chats.up
+                    else Bucket.BLACKLIST
+                )
                 await manual_event([event.message], target)
 
         @self.writer_client.on(events.MessageDeleted(chats=chats.up))

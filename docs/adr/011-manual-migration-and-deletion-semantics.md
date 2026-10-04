@@ -17,6 +17,7 @@
 - 无来源身份、来源 group 不存在或 bucket 不支持时，将 trigger 送往 MAN。
 - 手工迁移到 UP 时，传播全部 group Hash，转发原 INFO/VER，并标记 UP merge dirty。
 - 手工迁移到 BLACKLIST 时，保留用户转入的 trigger，直接从 INFO 频道补转原 INFO；先持久化全部 blacklist Hash，再删除旧 group，最后清理 active state。
+- 手工从 ONESHOT 转发到 REPEAT 时，保留用户转入的消息并删除 ONESHOT 原消息；随后在一个数据库事务中停用旧消息映射、登记 REPEAT 新消息，并将 group 及其 occurrence 更新为 REPEAT。与 UP/BLACKLIST 一样，允许转发头保留 VER 或 SOURCE 来源并按既有身份/Hash 规则定位，但最终必须唯一定位到 active ONESHOT group；已属于 REPEAT 的程序输出不触发迁移。
 - 程序删除 UP 旧消息前写入带 TTL 的 `expected_deletions`。
 - 非 expected 的 UP 消息删除会将对应 Hash 写入 `up_hidden_hashes`；该 Hash 不再展示，但继续参与 UP 命中和连通。
 - 当前不支持 UP→BLACKLIST 或 BLACKLIST→其他 bucket。

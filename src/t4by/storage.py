@@ -965,6 +965,52 @@ class Store:
             rows,
         )
 
+    async def finish_manual_repeat(self, group: GroupData, trigger: LogicalMessage) -> None:
+        now = time.time()
+        async with self.lock:
+            db = await self._begin()
+            try:
+                old_media = await (
+                    await db.execute(
+                        """SELECT media_hash FROM group_messages
+                           WHERE group_id=? AND is_active=1 ORDER BY id""",
+                        (group.group_id,),
+                    )
+                ).fetchall()
+                await db.execute(
+                    "UPDATE bucket_groups SET bucket='repeat',updated_at=? WHERE group_id=?",
+                    (now, group.group_id),
+                )
+                await db.execute("UPDATE group_messages SET is_active=0 WHERE group_id=?", (group.group_id,))
+                await db.executemany(
+                    """INSERT OR IGNORE INTO group_messages
+                       (group_id,channel_role,chat_id,message_id,album_batch_index,
+                        media_hash,is_active,created_at) VALUES(?,?,?,?,?,?,1,?)""",
+                    [
+                        (
+                            group.group_id,
+                            Bucket.REPEAT,
+                            trigger.chat_id,
+                            message_id,
+                            0,
+                            old_media[index]["media_hash"] if index < len(old_media) else None,
+                            now,
+                        )
+                        for index, message_id in enumerate(trigger.message_ids)
+                    ],
+                )
+                if group.occurrence_ids:
+                    placeholders = ",".join("?" for _ in group.occurrence_ids)
+                    await db.execute(
+                        f"""UPDATE occurrence_records SET current_bucket='repeat',updated_at=?
+                            WHERE occurrence_id IN ({placeholders})""",
+                        (now, *group.occurrence_ids),
+                    )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
     async def promote_manual_up(self, group: GroupData) -> None:
         now = time.time()
         async with self.lock:

@@ -7,6 +7,7 @@ from telethon.tl.types import Message, MessageFwdHeader, PeerChannel
 
 from t4by.app import Application, _logical, _resolve_chats
 from t4by.manual import ManualService
+from t4by.models import Bucket
 
 
 class Client:
@@ -82,3 +83,49 @@ async def test_manual_albums_ignore_outputs_and_reject_mixed_origins(store, chat
         await app.manual.process(**job.payload)
         assert gateway.forwarded == [(trigger, chats.man)]
         assert gateway.deleted == []
+
+
+@pytest.mark.parametrize("source", ["oneshot", "ver", "source"])
+async def test_repeat_listener_enqueues_retained_forward_origins(store, chats, source) -> None:
+    chats = replace(
+        chats,
+        source=-(10**12 + 1),
+        ver=-(10**12 + 3),
+        oneshot=-(10**12 + 5),
+        repeat=-(10**12 + 6),
+    )
+
+    class EventClient:
+        def __init__(self):
+            self.handlers = {}
+
+        def on(self, event):
+            def register(handler):
+                self.handlers[handler.__name__] = handler
+                return handler
+
+            return register
+
+    source_channel = {"source": 1, "ver": 3, "oneshot": 5}[source]
+    raw = Message(
+        id=800,
+        peer_id=PeerChannel(6),
+        message="123456",
+        fwd_from=MessageFwdHeader(date=None, from_id=PeerChannel(source_channel), channel_post=100),
+    )
+    app = object.__new__(Application)
+    app.reader_client = EventClient()
+    app.writer_client = EventClient()
+    app.manual = ManualService(store, FakeGateway(), chats)
+    app._register_handlers(chats)
+
+    await app.writer_client.handlers["manual_single"](SimpleNamespace(message=raw, chat_id=chats.repeat))
+
+    job = await store.claim_job(("manual",))
+    assert job and job.payload == {
+        "target": Bucket.REPEAT,
+        "trigger_chat_id": chats.repeat,
+        "trigger_message_ids": [800],
+        "source_chat_id": getattr(chats, source),
+        "source_message_id": 100,
+    }

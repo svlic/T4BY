@@ -74,6 +74,45 @@ async def test_manual_blacklist_forwards_originals_and_removes_group(store, chat
     assert blacklist == {"HASH"}
 
 
+@pytest.mark.parametrize("source_role", ["oneshot", "ver", "source"])
+async def test_manual_repeat_moves_oneshot_message_with_retained_origin(store, chats, source_role) -> None:
+    gateway = FakeGateway()
+    occurrence_id, target = await _oneshot_group(store, gateway)
+    trigger = logical(chats.repeat, 750)
+    gateway.add(trigger)
+    gateway.hash_media = AsyncMock(return_value=[Media("HASH", Origin.VER, trigger.chat_id, 750, 0, "video")])
+    service = ManualService(store, gateway, chats)
+    source_chat_id, source_message_id = {
+        "oneshot": (chats.oneshot, target.min_id),
+        "ver": (chats.ver, 110),
+        "source": (chats.source, 999),
+    }[source_role]
+
+    await service.process(
+        Bucket.REPEAT,
+        trigger.chat_id,
+        trigger.message_ids,
+        source_chat_id,
+        source_message_id,
+    )
+
+    assert gateway.deleted == [(target.chat_id, target.min_id)]
+    assert gateway.forwarded[-1] == (logical(chats.ver, 110, text="123456"), chats.oneshot)
+    if source_role == "source":
+        gateway.hash_media.assert_awaited_once_with(trigger, Origin.VER)
+    else:
+        gateway.hash_media.assert_not_awaited()
+    occurrence = await store.get_occurrence(occurrence_id)
+    assert occurrence and occurrence.current_bucket == Bucket.REPEAT
+    assert await store.active_group(target.chat_id, target.min_id) is None
+    group = await store.active_group(trigger.chat_id, trigger.min_id)
+    assert group and group.bucket == Bucket.REPEAT and group.occurrence_ids == (occurrence_id,)
+
+    # Retrying the durable job after the DB commit must be harmless.
+    await service.process(Bucket.REPEAT, trigger.chat_id, trigger.message_ids, source_chat_id, source_message_id)
+    assert gateway.deleted == [(target.chat_id, target.min_id)]
+
+
 async def test_blacklist_ignores_internal_ver_without_active_group(store, chats) -> None:
     gateway = FakeGateway()
     trigger = logical(chats.blacklist, 800)

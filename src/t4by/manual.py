@@ -88,6 +88,11 @@ class ManualService:
             source_message_id,
         )
         trigger = await self.gateway.get_logical(trigger_chat_id, trigger_message_ids)
+        if target == Bucket.REPEAT:
+            migrated = await self.store.active_group(trigger.chat_id, trigger.min_id)
+            if migrated is not None and migrated.bucket == Bucket.REPEAT:
+                log.info("manual event ignored reason=already_in_target group_id=%s", migrated.group_id)
+                return
         if source_chat_id is None or source_message_id is None:
             log.warning(
                 "manual trigger routed to man reason=missing_source target=%s trigger=%s/%s",
@@ -108,8 +113,8 @@ class ManualService:
             media = await self.gateway.hash_media(trigger, Origin.VER)
             hashes = {item.media_hash for item in media}
             _, up, blacklisted = await self.store.known_hashes(hashes)
-            known = up if target == Bucket.UP else blacklisted
-            if hashes and hashes <= known:
+            known = up if target == Bucket.UP else blacklisted if target == Bucket.BLACKLIST else set()
+            if hashes and known and hashes <= known:
                 log.info(
                     "manual event ignored reason=already_in_target target=%s trigger=%s/%s",
                     target,
@@ -118,7 +123,11 @@ class ManualService:
                 )
                 return
             group = await self.store.active_group_for_ver_hashes(hashes)
-        if group is None or group.bucket not in (Bucket.ONESHOT, Bucket.REPEAT):
+        if target == Bucket.REPEAT and group is not None and group.bucket == Bucket.REPEAT:
+            log.info("manual event ignored reason=already_in_target group_id=%s", group.group_id)
+            return
+        allowed_source_buckets = (Bucket.ONESHOT,) if target == Bucket.REPEAT else (Bucket.ONESHOT, Bucket.REPEAT)
+        if group is None or group.bucket not in allowed_source_buckets:
             if source_chat_id in (self.chats.info, self.chats.ver):
                 log.info(
                     "manual event ignored reason=internal_forward target=%s trigger=%s/%s source=%s/%s",
@@ -148,7 +157,13 @@ class ManualService:
                 return
         try:
             destination = self.chats.up if target == Bucket.UP else self.chats.blacklist
-            originals = await self._originals(group) if target == Bucket.UP else await self._infos(group)
+            originals = (
+                await self._originals(group)
+                if target == Bucket.UP
+                else await self._infos(group)
+                if target == Bucket.BLACKLIST
+                else []
+            )
             log.info(
                 "manual source resolved target=%s group_id=%s source_bucket=%s occurrences=%d originals=%d hashes=%d",
                 target,
@@ -158,6 +173,17 @@ class ManualService:
                 len(originals),
                 len(group.hashes),
             )
+            if target == Bucket.REPEAT:
+                old_messages = await self.store.messages_for_groups({group.group_id})
+                await self.gateway.delete(old_messages)
+                await self.store.finish_manual_repeat(group, trigger)
+                log.info(
+                    "manual migration completed target=%s group_id=%s deleted=%d",
+                    target,
+                    group.group_id,
+                    len(old_messages),
+                )
+                return
             forwarded = [await self.gateway.forward(item, destination) for item in originals]
             if target == Bucket.UP:
                 await self.store.promote_manual_up(group)
