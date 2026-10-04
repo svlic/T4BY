@@ -30,13 +30,13 @@ class WriterService:
         self.chats = chats
         self.classification_commit_lock = asyncio.Lock()
 
-    async def enqueue_ver(self, logical: LogicalMessage, received_at: float | None = None) -> None:
+    async def enqueue_ver(self, logical: LogicalMessage) -> None:
         key = f"{logical.chat_id}:{logical.grouped_id or logical.min_id}"
         await self.store.enqueue_job(
             "classify",
             key,
             {"chat_id": logical.chat_id, "message_ids": list(logical.message_ids)},
-            not_before=(received_at or time.time()) + 10,
+            not_before=time.time() + 10,
         )
 
     async def _to_man(self, ver: LogicalMessage, occurrence: Occurrence | None = None) -> None:

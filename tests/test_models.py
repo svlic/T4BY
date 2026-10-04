@@ -24,7 +24,7 @@ def test_collapses_album_as_one_logical_message() -> None:
         Message(1, 11, grouped_id=9),
         Message(1, 13, text="single"),
     ]
-    logical = collapse_messages(raw)
+    logical = collapse_messages(iter(raw))
     assert [item.message_ids for item in logical] == [(11, 12), (13,)]
     assert logical[0].effective_text == "caption"
 

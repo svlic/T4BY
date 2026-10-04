@@ -99,10 +99,9 @@ def contains_code(text: str, code: str) -> bool:
 
 def collapse_messages(messages: Iterable[Message], *, newest_first: bool = False) -> list[LogicalMessage]:
     """Fold raw Telegram messages into logical messages while preserving direction order."""
-    ordered = list(messages)
     groups: dict[tuple[str, int], list[Message]] = {}
     keys: list[tuple[str, int]] = []
-    for message in ordered:
+    for message in messages:
         key = ("group", message.grouped_id) if message.grouped_id else ("single", message.message_id)
         if key not in groups:
             groups[key] = []

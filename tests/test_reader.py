@@ -34,3 +34,17 @@ async def test_searches_older_only_after_five_newer_logical_messages_miss() -> N
 
     assert result is not None
     assert result.message_ids == (97,)
+
+
+async def test_search_ignores_page_candidate_overlapping_source_album() -> None:
+    gateway = FakeGateway()
+    source = logical(1, 100, 101, grouped_id=77, text="123456")
+    gateway.history[(True, 101)] = [
+        Message(1, 101, grouped_id=77, text="123456"),
+        Message(1, 102, text="actual 123456"),
+    ]
+
+    result = await find_source_match(gateway, source, "123456")
+
+    assert result is not None
+    assert result.message_ids == (102,)

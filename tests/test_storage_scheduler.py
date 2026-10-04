@@ -42,3 +42,12 @@ async def test_retried_info_reuses_occurrence_identity(store) -> None:
     first = await store.create_occurrence(info, "123456")
     second = await store.create_occurrence(info, "123456")
     assert first == second
+
+
+async def test_operational_metrics_reports_merge_depth_from_dirty_buckets(store) -> None:
+    await store.mark_merge_dirty(Bucket.REPEAT, {"A"})
+
+    dirty, ages = await store.operational_metrics()
+
+    assert dirty == 1
+    assert ages == {}

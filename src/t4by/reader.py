@@ -26,6 +26,7 @@ async def find_source_match(
     page_size: int = 60,
 ) -> LogicalMessage | None:
     """Search newer logical messages first, then older logical messages."""
+    source_ids = set(source.message_ids)
     for newer, start in ((True, source.max_id), (False, source.min_id)):
         logical: list[LogicalMessage] = []
         anchor = start
@@ -37,7 +38,7 @@ async def find_source_match(
             page = collapse_messages(raw, newest_first=not newer)
             for candidate in page:
                 identity = candidate.message_ids
-                if identity in seen or set(identity).intersection(source.message_ids):
+                if identity in seen or not source_ids.isdisjoint(identity):
                     continue
                 seen.add(identity)
                 logical.append(candidate)

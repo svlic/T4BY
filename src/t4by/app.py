@@ -30,18 +30,15 @@ def _logical(raw_messages: list[Any]) -> LogicalMessage:
 
 
 async def _resolve_chats(reader: TelegramClient, writer: TelegramClient, chats: Chats) -> Chats:
-    async def resolve(client: TelegramClient, value: int | str) -> int:
-        return await client.get_peer_id(value)
-
     return Chats(
-        source=await resolve(reader, chats.source),
-        info=await resolve(writer, chats.info),
-        ver=await resolve(writer, chats.ver),
-        man=await resolve(writer, chats.man),
-        oneshot=await resolve(writer, chats.oneshot),
-        repeat=await resolve(writer, chats.repeat),
-        up=await resolve(writer, chats.up),
-        blacklist=await resolve(writer, chats.blacklist),
+        source=await reader.get_peer_id(chats.source),
+        info=await writer.get_peer_id(chats.info),
+        ver=await writer.get_peer_id(chats.ver),
+        man=await writer.get_peer_id(chats.man),
+        oneshot=await writer.get_peer_id(chats.oneshot),
+        repeat=await writer.get_peer_id(chats.repeat),
+        up=await writer.get_peer_id(chats.up),
+        blacklist=await writer.get_peer_id(chats.blacklist),
     )
 
 
@@ -198,9 +195,9 @@ class Application:
             QUEUE_DEPTH.labels(queue="reader").set(await self.store.queue_depth(["reader"]))
             QUEUE_DEPTH.labels(queue="classification").set(await self.store.queue_depth(["classify"]))
             QUEUE_DEPTH.labels(queue="manual").set(await self.store.queue_depth(["manual", "man"]))
-            dirty, merge_depth, ages = await self.store.operational_metrics()
+            dirty, ages = await self.store.operational_metrics()
             MERGE_DIRTY.set(dirty)
-            QUEUE_DEPTH.labels(queue="merge").set(merge_depth)
+            QUEUE_DEPTH.labels(queue="merge").set(dirty)
             for queue, kind in (
                 ("reader", "reader"),
                 ("classification", "classify"),

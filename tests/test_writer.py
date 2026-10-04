@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from conftest import FakeGateway, logical
 
 from t4by.gateway import RetryAfter
@@ -11,6 +13,16 @@ def test_classification_priority() -> None:
     assert choose_bucket(hashes, set(), {"A"}, set()) == Bucket.UP
     assert choose_bucket(hashes, set(), set(), set()) == Bucket.ONESHOT
     assert choose_bucket(hashes, {"A"}, set(), set()) == Bucket.REPEAT
+
+
+async def test_ver_job_is_delayed_ten_seconds(store, chats, monkeypatch) -> None:
+    monkeypatch.setattr("t4by.writer.time", SimpleNamespace(time=lambda: 100.0))
+    writer = WriterService(store, FakeGateway(), chats)
+
+    await writer.enqueue_ver(logical(chats.ver, 10))
+
+    row = await (await store._database().execute("SELECT not_before FROM jobs")).fetchone()
+    assert row["not_before"] == 110.0
 
 
 async def _occurrence(store, code: str, suffix: int):

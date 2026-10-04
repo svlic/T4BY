@@ -162,11 +162,6 @@ CREATE TABLE IF NOT EXISTS merge_dirty (
     dirty INTEGER NOT NULL,
     running INTEGER NOT NULL DEFAULT 0
 );
-
-CREATE TABLE IF NOT EXISTS processed_events (
-    event_key TEXT PRIMARY KEY,
-    created_at REAL NOT NULL
-);
 """
 
 
@@ -200,7 +195,6 @@ class Job:
     job_id: int
     kind: str
     payload: dict[str, Any]
-    attempts: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +204,6 @@ class GroupData:
     occurrence_ids: tuple[str, ...]
     codes: tuple[str, ...]
     hashes: frozenset[str]
-    message_ids: tuple[tuple[int, int], ...]
 
 
 class Store:
@@ -249,13 +242,6 @@ class Store:
         )
         await self._database().execute("UPDATE merge_dirty SET running=0, dirty=1 WHERE running=1")
 
-    async def remember_event(self, event_key: str) -> bool:
-        cursor = await self._database().execute(
-            "INSERT OR IGNORE INTO processed_events(event_key, created_at) VALUES(?, ?)",
-            (event_key, time.time()),
-        )
-        return cursor.rowcount == 1
-
     async def enqueue_job(
         self, kind: str, dedupe_key: str, payload: dict[str, Any], not_before: float | None = None
     ) -> bool:
@@ -290,7 +276,7 @@ class Store:
                     (time.time(), row["job_id"]),
                 )
                 await db.commit()
-                return Job(row["job_id"], row["kind"], json.loads(row["payload"]), row["attempts"] + 1)
+                return Job(row["job_id"], row["kind"], json.loads(row["payload"]))
             except BaseException:
                 await db.rollback()
                 raise
@@ -367,7 +353,7 @@ class Store:
                 await db.rollback()
                 raise
 
-    async def operational_metrics(self) -> tuple[int, float, dict[str, float]]:
+    async def operational_metrics(self) -> tuple[int, dict[str, float]]:
         db = self._database()
         dirty = await (await db.execute("SELECT count(*) n FROM merge_dirty WHERE dirty=1 OR running=1")).fetchone()
         rows = await (
@@ -378,7 +364,7 @@ class Store:
         ).fetchall()
         now = time.time()
         ages = {row["kind"]: max(0, now - row["oldest"]) for row in rows}
-        return int(dirty["n"]), float(int(dirty["n"])), ages
+        return int(dirty["n"]), ages
 
     async def finish_reader(
         self,
@@ -758,12 +744,6 @@ class Store:
                 )
             ).fetchall()
         codes = await (await db.execute("SELECT code FROM up_group_codes WHERE group_id=?", (group_id,))).fetchall()
-        messages = await (
-            await db.execute(
-                "SELECT chat_id,message_id FROM group_messages WHERE group_id=? AND is_active=1",
-                (group_id,),
-            )
-        ).fetchall()
         occurrence_codes = {row["code"] for row in occurrences}
         return GroupData(
             group_id,
@@ -771,7 +751,6 @@ class Store:
             tuple(row["occurrence_id"] for row in occurrences),
             tuple(sorted({row["code"] for row in codes} | occurrence_codes)),
             frozenset(row["media_hash"] for row in hashes),
-            tuple((row["chat_id"], row["message_id"]) for row in messages),
         )
 
     async def up_group_media(self, group_ids: Iterable[str]) -> list[Media]:
