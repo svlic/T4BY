@@ -174,6 +174,13 @@ class RpcGates:
             await self.download_large.penalize()
         else:
             await self.control.penalize()
+        log.warning(
+            "Telegram flood wait method=%s chat=%s server_seconds=%d retry_seconds=%.1f",
+            method,
+            chat,
+            seconds,
+            wait,
+        )
         return RetryAfter(wait, key)
 
 
@@ -350,6 +357,11 @@ class TelethonGateway:
                     chat=destination,
                 )
         except FileReferenceExpiredError:
+            log.warning(
+                "Telegram media reference expired; using upload fallback destination=%s media=%d",
+                destination,
+                len(media),
+            )
             raw = await self._upload_fallback(destination, media, caption)
         values = raw if isinstance(raw, list) else [raw]
         return LogicalMessage(values[0].chat_id, tuple(message_from_telethon(item) for item in values))

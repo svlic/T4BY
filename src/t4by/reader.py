@@ -62,13 +62,20 @@ class ReaderService:
 
     async def enqueue(self, logical: LogicalMessage) -> None:
         key = f"{logical.chat_id}:{logical.grouped_id or logical.min_id}"
-        await self.store.enqueue_job(
+        enqueued = await self.store.enqueue_job(
             "reader",
             key,
             {"chat_id": logical.chat_id, "message_ids": list(logical.message_ids)},
         )
+        log.info(
+            "reader message %s chat_id=%s message_ids=%s",
+            "enqueued" if enqueued else "deduplicated",
+            logical.chat_id,
+            logical.message_ids,
+        )
 
     async def process(self, chat_id: int, message_ids: Sequence[int]) -> None:
+        log.info("reader processing started chat_id=%s message_ids=%s", chat_id, tuple(message_ids))
         info = await self.gateway.get_logical(chat_id, message_ids)
         code = extract_code(info.effective_text)
         occurrence_id = await self.store.create_occurrence(info, code)
@@ -77,26 +84,50 @@ class ReaderService:
             if code is None:
                 man = await self.gateway.forward(info, self.chats.man)
                 await self.store.finish_reader(occurrence_id, ReaderStatus.ERROR, man=man)
+                log.warning("reader routed to man reason=missing_code occurrence_id=%s", occurrence_id)
                 return
             source = await self.gateway.resolve_forward_source(info)
             if source is None or source.chat_id != self.chats.source:
                 man = await self.gateway.forward(info, self.chats.man)
                 await self.store.finish_reader(occurrence_id, ReaderStatus.ERROR, man=man)
+                log.warning(
+                    "reader routed to man reason=invalid_source occurrence_id=%s source_chat_id=%s",
+                    occurrence_id,
+                    source.chat_id if source else None,
+                )
                 return
             target = await find_source_match(self.gateway, source, code)
             if target is None:
                 man = await self.gateway.forward(info, self.chats.man)
                 await self.store.finish_reader(occurrence_id, ReaderStatus.UNMATCHED, source=source, man=man)
+                log.warning(
+                    "reader routed to man reason=source_unmatched occurrence_id=%s code=%s source=%s/%s",
+                    occurrence_id,
+                    code,
+                    source.chat_id,
+                    source.message_ids,
+                )
                 return
             ver = await self.gateway.forward(target, self.chats.ver)
             await self.store.finish_reader(occurrence_id, ReaderStatus.MATCHED, source=source, ver=ver)
+            log.info(
+                "reader matched occurrence_id=%s code=%s source=%s/%s matched=%s/%s ver=%s/%s",
+                occurrence_id,
+                code,
+                source.chat_id,
+                source.message_ids,
+                target.chat_id,
+                target.message_ids,
+                ver.chat_id,
+                ver.message_ids,
+            )
         except RetryAfter:
             raise
         except Exception:
-            log.exception("reader occurrence failed", extra={"occurrence_id": occurrence_id})
+            log.exception("reader occurrence failed occurrence_id=%s", occurrence_id)
             try:
                 man = await self.gateway.forward(info, self.chats.man)
                 await self.store.finish_reader(occurrence_id, ReaderStatus.ERROR, source=source, man=man)
             except Exception:
-                log.exception("failed to forward reader error to man")
+                log.exception("failed to forward reader error to man occurrence_id=%s", occurrence_id)
             raise

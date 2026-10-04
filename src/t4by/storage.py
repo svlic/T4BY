@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Iterable, Sequence
@@ -12,6 +13,8 @@ from typing import Any
 import aiosqlite
 
 from .models import Bucket, LogicalMessage, Media, Origin, ReaderStatus
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -218,11 +221,13 @@ class Store:
         await self.db.executescript(SCHEMA)
         await self.db.execute("PRAGMA busy_timeout=5000")
         await self.recover_running_jobs()
+        log.info("storage opened path=%s", self.path)
 
     async def close(self) -> None:
         if self.db:
             await self.db.close()
             self.db = None
+            log.info("storage closed path=%s", self.path)
 
     def _database(self) -> aiosqlite.Connection:
         if self.db is None:
@@ -236,11 +241,13 @@ class Store:
 
     async def recover_running_jobs(self) -> None:
         now = time.time()
-        await self._database().execute(
+        jobs = await self._database().execute(
             "UPDATE jobs SET status='retry_wait', not_before=?, updated_at=? WHERE status='running'",
             (now, now),
         )
-        await self._database().execute("UPDATE merge_dirty SET running=0, dirty=1 WHERE running=1")
+        merges = await self._database().execute("UPDATE merge_dirty SET running=0, dirty=1 WHERE running=1")
+        if jobs.rowcount or merges.rowcount:
+            log.warning("storage recovered interrupted work jobs=%d merges=%d", jobs.rowcount, merges.rowcount)
 
     async def enqueue_job(
         self, kind: str, dedupe_key: str, payload: dict[str, Any], not_before: float | None = None

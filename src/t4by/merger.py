@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -16,6 +17,8 @@ from .models import (
     stable_unique_media,
 )
 from .storage import Store
+
+log = logging.getLogger(__name__)
 
 
 def partition_components(seed_hashes: set[str], nodes: dict[str, set[str]]) -> list[set[str]]:
@@ -45,7 +48,15 @@ class MergeEngine:
             nodes = await self.store.up_nodes()
         else:
             raise ValueError(f"bucket is not mergeable: {bucket}")
-        for members in partition_components(seed_hashes, nodes):
+        components = partition_components(seed_hashes, nodes)
+        log.info(
+            "merge plan built bucket=%s seed_hashes=%d nodes=%d components=%d",
+            bucket,
+            len(seed_hashes),
+            len(nodes),
+            len(components),
+        )
+        for members in components:
             if bucket == Bucket.REPEAT:
                 await self._repeat_component(members, nodes)
             else:
@@ -83,10 +94,16 @@ class MergeEngine:
         if not references:
             references = [{"chat_id": chat_id, "message_ids": [message_id]} for chat_id, message_id in old_messages]
         identity = ":".join(f"{item['chat_id']}-{'-'.join(map(str, item['message_ids']))}" for item in references)
-        await self.store.enqueue_job(
+        enqueued = await self.store.enqueue_job(
             "man",
             f"merge:{identity}",
             {"references": references},
+        )
+        log.warning(
+            "merge failure report %s occurrences=%d references=%d",
+            "enqueued" if enqueued else "deduplicated",
+            len(occurrence_ids),
+            len(references),
         )
 
     async def _repeat_component(self, members: set[str], nodes: dict[str, set[str]]) -> None:
@@ -95,17 +112,32 @@ class MergeEngine:
         media = stable_unique_media([await self.store.media_for_occurrences(occurrence_ids, Origin.VER)])
         old_groups = await self.store.groups_for_occurrences(occurrence_ids)
         old_messages = await self.store.messages_for_groups(old_groups)
+        log.info(
+            "repeat component started occurrences=%d groups=%d media=%d old_messages=%d",
+            len(occurrence_ids),
+            len(old_groups),
+            len(media),
+            len(old_messages),
+        )
         try:
             sent = await self._send_batches(self.chats.repeat, media, codes)
             await self.gateway.delete(old_messages)
             hashes = set().union(*(nodes[node] for node in members))
-            await self.store.replace_group(
+            group_id = await self.store.replace_group(
                 Bucket.REPEAT,
                 old_groups,
                 occurrence_ids,
                 codes,
                 hashes,
                 sent,
+            )
+            log.info(
+                "repeat component completed group_id=%s occurrences=%d hashes=%d sent_batches=%d deleted=%d",
+                group_id,
+                len(occurrence_ids),
+                len(hashes),
+                len(sent),
+                len(old_messages),
             )
         except RetryAfter:
             raise
@@ -126,17 +158,34 @@ class MergeEngine:
         new_media = await self.store.media_for_occurrences(occurrence_ids)
         display = [item for item in stable_unique_media([previous_media, new_media]) if item.media_hash not in hidden]
         old_messages = await self.store.messages_for_groups(old_groups)
+        log.info(
+            "up component started occurrences=%d groups=%d hashes=%d display_media=%d hidden_media=%d old_messages=%d",
+            len(occurrence_ids),
+            len(old_groups),
+            len(hashes),
+            len(display),
+            len(hidden),
+            len(old_messages),
+        )
         try:
             sent = await self._send_batches(self.chats.up, display, codes) if display else []
             await self.store.add_expected_deletions(old_messages)
             await self.gateway.delete(old_messages)
-            await self.store.replace_group(
+            group_id = await self.store.replace_group(
                 Bucket.UP,
                 old_groups,
                 occurrence_ids,
                 codes,
                 hashes,
                 sent,
+            )
+            log.info(
+                "up component completed group_id=%s occurrences=%d hashes=%d sent_batches=%d deleted=%d",
+                group_id,
+                len(occurrence_ids),
+                len(hashes),
+                len(sent),
+                len(old_messages),
             )
         except RetryAfter:
             raise

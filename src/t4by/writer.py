@@ -32,11 +32,17 @@ class WriterService:
 
     async def enqueue_ver(self, logical: LogicalMessage) -> None:
         key = f"{logical.chat_id}:{logical.grouped_id or logical.min_id}"
-        await self.store.enqueue_job(
+        enqueued = await self.store.enqueue_job(
             "classify",
             key,
             {"chat_id": logical.chat_id, "message_ids": list(logical.message_ids)},
             not_before=time.time() + 10,
+        )
+        log.info(
+            "classification message %s chat_id=%s message_ids=%s delay_seconds=10",
+            "enqueued" if enqueued else "deduplicated",
+            logical.chat_id,
+            logical.message_ids,
         )
 
     async def _to_man(self, ver: LogicalMessage, occurrence: Occurrence | None = None) -> None:
@@ -49,9 +55,13 @@ class WriterService:
                 log.exception("failed to include INFO in writer MAN report")
 
     async def process(self, chat_id: int, message_ids: Sequence[int]) -> None:
+        log.info("classification started chat_id=%s message_ids=%s", chat_id, tuple(message_ids))
         ver = await self.gateway.get_logical(chat_id, message_ids)
         occurrence = await self.store.occurrence_for_ver(chat_id, message_ids)
         if occurrence is None:
+            log.warning(
+                "classification routed to man reason=occurrence_not_found ver=%s/%s", chat_id, tuple(message_ids)
+            )
             await self._to_man(ver)
             return
         try:
@@ -63,11 +73,18 @@ class WriterService:
             media = [*info_media, *ver_media]
             if not media:
                 raise ValueError("INFO and VER contain no downloadable media")
+            log.info(
+                "classification media hashed occurrence_id=%s info_media=%d ver_media=%d unique_hashes=%d",
+                occurrence.occurrence_id,
+                len(info_media),
+                len(ver_media),
+                len({item.media_hash for item in media}),
+            )
             await self._classify(occurrence, info, ver, media)
         except RetryAfter:
             raise
         except Exception:
-            log.exception("writer classification failed", extra={"occurrence_id": occurrence.occurrence_id})
+            log.exception("writer classification failed occurrence_id=%s", occurrence.occurrence_id)
             await self._to_man(ver, occurrence)
             raise
 
@@ -84,10 +101,21 @@ class WriterService:
         async with self.classification_commit_lock:
             historical, up, blacklist = await self.store.known_hashes(all_hashes)
             bucket = choose_bucket(all_hashes, historical, up, blacklist)
+            log.info(
+                "classification decided occurrence_id=%s code=%s bucket=%s hashes=%d historical=%d up=%d blacklist=%d",
+                occurrence.occurrence_id,
+                occurrence.code,
+                bucket,
+                len(all_hashes),
+                len(historical),
+                len(up),
+                len(blacklist),
+            )
             if bucket == Bucket.BLACKLIST:
                 await self.gateway.forward(ver, self.chats.blacklist)
                 await self.gateway.forward(info, self.chats.blacklist)
                 await self.store.save_classification(occurrence, media, bucket, None)
+                log.info("classification completed occurrence_id=%s bucket=%s", occurrence.occurrence_id, bucket)
                 return bucket
 
             if bucket == Bucket.UP:
@@ -97,6 +125,12 @@ class WriterService:
                 if group_id:
                     await self.store.append_group_messages(group_id, bucket, [up_info])
                 await self.store.mark_merge_dirty(bucket, all_hashes)
+                log.info(
+                    "classification completed occurrence_id=%s bucket=%s group_id=%s merge_dirty=true",
+                    occurrence.occurrence_id,
+                    bucket,
+                    group_id,
+                )
                 return bucket
 
             destination = self.chats.oneshot if bucket == Bucket.ONESHOT else self.chats.repeat
@@ -104,4 +138,12 @@ class WriterService:
             await self.store.save_classification(occurrence, media, bucket, target)
             if bucket == Bucket.REPEAT:
                 await self.store.mark_merge_dirty(bucket, all_hashes)
+            log.info(
+                "classification completed occurrence_id=%s bucket=%s target=%s/%s merge_dirty=%s",
+                occurrence.occurrence_id,
+                bucket,
+                target.chat_id,
+                target.message_ids,
+                bucket == Bucket.REPEAT,
+            )
             return bucket

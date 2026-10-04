@@ -62,11 +62,23 @@ class Application:
         self.tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
+        log.info("T4BY starting database=%s", self.settings.database)
         await self.store.open()
         await self.reader_client.start()
         await self.writer_client.start()
         chats = await _resolve_chats(self.reader_client, self.writer_client, self.settings.chats)
         self.settings = replace(self.settings, chats=chats)
+        log.info(
+            "Telegram chats resolved source=%s info=%s ver=%s man=%s oneshot=%s repeat=%s up=%s blacklist=%s",
+            chats.source,
+            chats.info,
+            chats.ver,
+            chats.man,
+            chats.oneshot,
+            chats.repeat,
+            chats.up,
+            chats.blacklist,
+        )
         reader_gateway = TelethonGateway(self.reader_client, RpcGates())
         writer_gateway = TelethonGateway(self.writer_client, RpcGates())
         self.reader = ReaderService(self.store, reader_gateway, chats)
@@ -88,7 +100,12 @@ class Application:
         )
         self.tasks.append(asyncio.create_task(self._merge_scheduler(), name="merge-scheduler"))
         self.tasks.append(asyncio.create_task(self._observe(), name="metrics-observer"))
-        log.info("T4BY started")
+        log.info(
+            "T4BY started reader_workers=%d classification_workers=%d manual_workers=%d",
+            self.settings.reader_workers,
+            self.settings.classification_workers,
+            self.settings.manual_workers,
+        )
 
     def _register_handlers(self, chats: Chats) -> None:
         @self.reader_client.on(events.Album(chats=chats.info))
@@ -115,6 +132,13 @@ class Application:
                 message.forward_chat_id for message in logical.messages if message.forward_chat_id is not None
             }
             if source_chats.intersection({chats.info, chats.ver}):
+                log.info(
+                    "manual event ignored reason=internal_forward target=%s trigger=%s/%s source_chats=%s",
+                    target,
+                    logical.chat_id,
+                    logical.message_ids,
+                    sorted(source_chats),
+                )
                 return
             await self.manual.enqueue(logical, target)
 
@@ -135,10 +159,20 @@ class Application:
                 return
             for message_id in event.deleted_ids:
                 if await self.store.consume_expected_deletion(event.chat_id, message_id):
+                    log.info(
+                        "up deletion acknowledged chat_id=%s message_id=%s expected=true", event.chat_id, message_id
+                    )
                     continue
                 media_hash = await self.store.hide_up_message(event.chat_id, message_id)
                 if media_hash:
                     await self.store.mark_merge_dirty(Bucket.UP, {media_hash})
+                    log.info(
+                        "up message hidden chat_id=%s message_id=%s merge_dirty=true",
+                        event.chat_id,
+                        message_id,
+                    )
+                else:
+                    log.warning("up deletion not mapped chat_id=%s message_id=%s", event.chat_id, message_id)
 
     async def _job_worker(self, kinds: tuple[str, ...]) -> None:
         while not self.stop.is_set():
@@ -146,13 +180,28 @@ class Application:
             if job is None:
                 await asyncio.sleep(0.2)
                 continue
+            started = time.monotonic()
+            log.info("job started job_id=%s kind=%s", job.job_id, job.kind)
             try:
                 await self._run_job(job)
                 await self.store.finish_job(job.job_id)
+                log.info(
+                    "job completed job_id=%s kind=%s duration_seconds=%.3f",
+                    job.job_id,
+                    job.kind,
+                    time.monotonic() - started,
+                )
             except RetryAfter as error:
                 await self.store.retry_job(job.job_id, time.time() + error.seconds, str(error))
+                log.warning(
+                    "job retry scheduled job_id=%s kind=%s method=%s delay_seconds=%.1f",
+                    job.job_id,
+                    job.kind,
+                    error.method,
+                    error.seconds,
+                )
             except Exception as error:
-                log.exception("job failed", extra={"job_id": job.job_id, "kind": job.kind})
+                log.exception("job failed job_id=%s kind=%s", job.job_id, job.kind)
                 await self.store.fail_job(job.job_id, repr(error))
 
     async def _run_job(self, job: Job) -> None:
@@ -165,6 +214,7 @@ class Application:
             payload["target"] = Bucket(payload["target"])
             await self.manual.process(**payload)
         elif job.kind == "man":
+            log.info("man report started job_id=%s references=%d", job.job_id, len(job.payload["references"]))
             for reference in job.payload["references"]:
                 logical = await self.writer.gateway.get_logical(reference["chat_id"], reference["message_ids"])
                 await self.writer.gateway.forward(logical, self.settings.chats.man)
@@ -179,13 +229,27 @@ class Application:
                 continue
             bucket, hashes = due
             started = time.monotonic()
+            log.info("merge job started bucket=%s seed_hashes=%d", bucket, len(hashes))
             try:
                 await self.merger.merge(bucket, hashes)
                 await self.store.finish_merge(bucket)
-            except RetryAfter:
+                log.info(
+                    "merge job completed bucket=%s seed_hashes=%d duration_seconds=%.3f",
+                    bucket,
+                    len(hashes),
+                    time.monotonic() - started,
+                )
+            except RetryAfter as error:
                 await self.store.finish_merge(bucket, failed_hashes=hashes)
+                log.warning(
+                    "merge retry scheduled bucket=%s seed_hashes=%d method=%s delay_seconds=%.1f",
+                    bucket,
+                    len(hashes),
+                    error.method,
+                    error.seconds,
+                )
             except Exception:
-                log.exception("merge failed", extra={"bucket": bucket})
+                log.exception("merge failed bucket=%s seed_hashes=%d", bucket, len(hashes))
                 await self.store.finish_merge(bucket)
             finally:
                 MERGE_DURATION.labels(bucket=bucket).observe(time.monotonic() - started)
@@ -223,6 +287,7 @@ class Application:
         await self.stop.wait()
 
     async def close(self) -> None:
+        log.info("T4BY stopping active_tasks=%d", len(self.tasks))
         self.stop.set()
         for task in self.tasks:
             task.cancel()
@@ -231,6 +296,7 @@ class Application:
                 await task
         await asyncio.gather(self.reader_client.disconnect(), self.writer_client.disconnect())
         await self.store.close()
+        log.info("T4BY stopped")
 
 
 async def async_main() -> None:

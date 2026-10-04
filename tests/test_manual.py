@@ -1,3 +1,5 @@
+import logging
+
 from conftest import FakeGateway, logical
 
 from t4by.manual import ManualService
@@ -24,12 +26,13 @@ async def _oneshot_group(store, gateway):
     return occurrence_id, target
 
 
-async def test_manual_up_promotes_group_and_marks_merge_dirty(store, chats) -> None:
+async def test_manual_up_promotes_group_and_marks_merge_dirty(store, chats, caplog) -> None:
     gateway = FakeGateway()
     occurrence_id, target = await _oneshot_group(store, gateway)
     trigger = logical(chats.up, 700)
     gateway.add(trigger)
     service = ManualService(store, gateway, chats)
+    caplog.set_level(logging.INFO, logger="t4by.manual")
 
     await service.process(Bucket.UP, trigger.chat_id, trigger.message_ids, target.chat_id, target.min_id)
 
@@ -37,6 +40,14 @@ async def test_manual_up_promotes_group_and_marks_merge_dirty(store, chats) -> N
     occurrence = await store.get_occurrence(occurrence_id)
     assert occurrence and occurrence.current_bucket == "up_pending"
     assert await store.claim_due_merge(0, 0) == (Bucket.UP, {"HASH"})
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        f"manual migration started target=up trigger={trigger.chat_id}/{trigger.message_ids}" in message
+        for message in messages
+    )
+    assert any(
+        "manual migration completed target=up" in message and "merge_dirty=true" in message for message in messages
+    )
 
 
 async def test_manual_blacklist_forwards_originals_and_removes_group(store, chats) -> None:
