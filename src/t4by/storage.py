@@ -729,6 +729,17 @@ class Store:
         ).fetchone()
         return await self.group_data(row["group_id"]) if row else None
 
+    async def active_group_for_occurrence(self, occurrence_id: str) -> GroupData | None:
+        row = await (
+            await self._database().execute(
+                """SELECT g.group_id FROM group_occurrences o
+                   JOIN bucket_groups g USING(group_id)
+                   WHERE o.occurrence_id=? AND g.status='active'""",
+                (occurrence_id,),
+            )
+        ).fetchone()
+        return await self.group_data(row["group_id"]) if row else None
+
     async def group_data(self, group_id: str) -> GroupData:
         db = self._database()
         group = await (await db.execute("SELECT * FROM bucket_groups WHERE group_id=?", (group_id,))).fetchone()

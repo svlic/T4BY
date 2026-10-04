@@ -58,6 +58,15 @@ class ManualService:
             originals.append(await self.gateway.get_logical(occurrence.ver_chat_id, occurrence.ver_message_ids))
         return originals
 
+    async def _infos(self, group: GroupData) -> list[LogicalMessage]:
+        infos: list[LogicalMessage] = []
+        for occurrence_id in group.occurrence_ids:
+            occurrence = await self.store.get_occurrence(occurrence_id)
+            if occurrence is None:
+                raise LookupError(f"mapping unavailable for {occurrence_id}")
+            infos.append(await self.gateway.get_logical(occurrence.info_chat_id, occurrence.info_message_ids))
+        return infos
+
     async def process(
         self,
         target: Bucket,
@@ -85,7 +94,21 @@ class ManualService:
             await self.gateway.forward(trigger, self.chats.man)
             return
         group = await self.store.active_group(source_chat_id, source_message_id)
+        if group is None and target == Bucket.BLACKLIST and source_chat_id == self.chats.ver:
+            occurrence = await self.store.occurrence_for_ver(source_chat_id, (source_message_id,))
+            if occurrence is not None:
+                group = await self.store.active_group_for_occurrence(occurrence.occurrence_id)
         if group is None or group.bucket not in (Bucket.ONESHOT, Bucket.REPEAT):
+            if target == Bucket.BLACKLIST and source_chat_id in (self.chats.info, self.chats.ver):
+                log.info(
+                    "manual event ignored reason=internal_forward target=%s trigger=%s/%s source=%s/%s",
+                    target,
+                    trigger.chat_id,
+                    trigger.message_ids,
+                    source_chat_id,
+                    source_message_id,
+                )
+                return
             log.warning(
                 "manual trigger routed to man reason=inactive_source target=%s trigger=%s/%s "
                 "source=%s/%s group_bucket=%s",
@@ -99,8 +122,8 @@ class ManualService:
             await self.gateway.forward(trigger, self.chats.man)
             return
         try:
-            originals = await self._originals(group)
             destination = self.chats.up if target == Bucket.UP else self.chats.blacklist
+            originals = await self._originals(group) if target == Bucket.UP else await self._infos(group)
             log.info(
                 "manual source resolved target=%s group_id=%s source_bucket=%s occurrences=%d originals=%d hashes=%d",
                 target,
@@ -124,15 +147,14 @@ class ManualService:
                 return
             await self.store.prepare_manual_blacklist(group.hashes)
             old_messages = await self.store.messages_for_groups({group.group_id})
-            trigger_messages = [(trigger.chat_id, message_id) for message_id in trigger.message_ids]
-            await self.gateway.delete([*old_messages, *trigger_messages])
+            await self.gateway.delete(old_messages)
             await self.store.finish_manual_blacklist(group)
             log.info(
                 "manual migration completed target=%s group_id=%s forwarded=%d deleted=%d",
                 target,
                 group.group_id,
                 len(forwarded),
-                len(old_messages) + len(trigger_messages),
+                len(old_messages),
             )
         except RetryAfter:
             raise

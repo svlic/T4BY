@@ -57,10 +57,23 @@ async def test_manual_blacklist_forwards_originals_and_removes_group(store, chat
     gateway.add(trigger)
     service = ManualService(store, gateway, chats)
 
-    await service.process(Bucket.BLACKLIST, trigger.chat_id, trigger.message_ids, target.chat_id, target.min_id)
+    await service.process(Bucket.BLACKLIST, trigger.chat_id, trigger.message_ids, chats.ver, 110)
 
-    assert [destination for _, destination in gateway.forwarded[-2:]] == [chats.blacklist, chats.blacklist]
-    assert set(gateway.deleted) == {(target.chat_id, target.min_id), (trigger.chat_id, trigger.min_id)}
+    forwarded, destination = gateway.forwarded[-1]
+    assert (forwarded.chat_id, destination) == (chats.info, chats.blacklist)
+    assert gateway.deleted == [(target.chat_id, target.min_id)]
     assert await store.get_occurrence(occurrence_id) is None
     _, _, blacklist = await store.known_hashes({"HASH"})
     assert blacklist == {"HASH"}
+
+
+async def test_blacklist_ignores_internal_ver_without_active_group(store, chats) -> None:
+    gateway = FakeGateway()
+    trigger = logical(chats.blacklist, 800)
+    gateway.add(trigger)
+    service = ManualService(store, gateway, chats)
+
+    await service.process(Bucket.BLACKLIST, trigger.chat_id, trigger.message_ids, chats.ver, 110)
+
+    assert gateway.forwarded == []
+    assert gateway.deleted == []

@@ -10,10 +10,10 @@
 
 ## 决策
 
-- 通过转发来源的 chat/message identity 查找当前 active group。
+- 通过转发来源的 chat/message identity 查找当前 active group；ONESHOT/REPEAT 二次转发保留 VER 来源时，通过 VER 对应的 occurrence 查找 active group。
 - 无来源身份、来源 group 不存在或 bucket 不支持时，将 trigger 送往 MAN。
 - 手工迁移到 UP 时，传播全部 group Hash，转发原 INFO/VER，并标记 UP merge dirty。
-- 手工迁移到 BLACKLIST 时，先持久化全部 blacklist Hash，再删除旧 group 和 trigger，最后清理 active state。
+- 手工迁移到 BLACKLIST 时，保留用户转入的 trigger，直接从 INFO 频道补转原 INFO；先持久化全部 blacklist Hash，再删除旧 group，最后清理 active state。
 - 程序删除 UP 旧消息前写入带 TTL 的 `expected_deletions`。
 - 非 expected 的 UP 消息删除会将对应 Hash 写入 `up_hidden_hashes`；该 Hash 不再展示，但继续参与 UP 命中和连通。
 - 当前不支持 UP→BLACKLIST 或 BLACKLIST→其他 bucket。

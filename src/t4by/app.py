@@ -131,7 +131,8 @@ class Application:
             source_chats = {
                 message.forward_chat_id for message in logical.messages if message.forward_chat_id is not None
             }
-            if source_chats.intersection({chats.info, chats.ver}):
+            internal_sources = {chats.info} if target == Bucket.BLACKLIST else {chats.info, chats.ver}
+            if source_chats.intersection(internal_sources):
                 log.info(
                     "manual event ignored reason=internal_forward target=%s trigger=%s/%s source_chats=%s",
                     target,
