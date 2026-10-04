@@ -14,6 +14,7 @@ Reader 与 Writer 分别使用独立的 API ID、API Hash 和 session。
 
 - Reader 解析 SOURCE，并消费 INFO 事件；它不承担业务写职责。
 - Writer 解析 INFO、VER、MAN、ONESHOT、REPEAT、UP 和 BLACKLIST；它不需要且长期不应访问 SOURCE。
+- Writer 分类原件仅从 INFO/VER 读取；手工迁移读取目标频道副本，合并可复用已有 UP 媒体。Writer 共用网关在 Telegram RPC 前拒绝 SOURCE 的读取、历史搜索、下载、转发、发送、删除及过期媒体回退，Reader 网关不受此限制。
 - 两个客户端顺序完成首次登录，避免两个未认证 session 争抢同一终端输入。
 
 ## 结果与权衡

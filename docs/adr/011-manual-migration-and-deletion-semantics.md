@@ -11,8 +11,9 @@
 ## 决策
 
 - 通过转发来源的 chat/message identity 查找当前 active group；ONESHOT/REPEAT 二次转发保留 VER 来源时，通过 VER 对应的 occurrence 查找 active group。
-- BLACKLIST 触发消息仍保留 SOURCE 来源且身份查找失败时，只读取 BLACKLIST 中的媒体计算 Hash，与已保存的 VER Hash 匹配；全部触发 Hash 必须唯一匹配一个 active ONESHOT/REPEAT group，否则送往 MAN。此过程不访问 SOURCE，也不按 code 猜测关联。
-- SOURCE 来源的触发媒体已全部列入 BLACKLIST 时忽略，避免程序补转的消息再次触发迁移。
+- UP/BLACKLIST 触发消息仍保留 SOURCE 来源且身份查找失败时，只读取目标频道中的媒体计算 Hash，与已保存的 VER Hash 匹配；全部触发 Hash 必须唯一匹配一个 active ONESHOT/REPEAT group，否则送往 MAN。允许 group 包含额外媒体，迁移单位仍是整个 group。此过程不访问 SOURCE，也不按 code 猜测关联。
+- SOURCE 来源的触发媒体已全部列入目标 bucket 时忽略，避免程序补转的消息再次触发迁移；UP 的 group 已全部处于 up_pending 时也忽略重复触发。
+- 不带转发头的普通相册不是迁移命令；全部来自 INFO 的补转消息忽略。混合频道来源或部分缺失来源的转发相册送往 MAN，不按第一条消息执行迁移。
 - 无来源身份、来源 group 不存在或 bucket 不支持时，将 trigger 送往 MAN。
 - 手工迁移到 UP 时，传播全部 group Hash，转发原 INFO/VER，并标记 UP merge dirty。
 - 手工迁移到 BLACKLIST 时，保留用户转入的 trigger，直接从 INFO 频道补转原 INFO；先持久化全部 blacklist Hash，再删除旧 group，最后清理 active state。

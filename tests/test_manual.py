@@ -13,9 +13,9 @@ from t4by.manual import ManualService
 from t4by.models import Bucket, Media, Origin, ReaderStatus
 
 
-async def _oneshot_group(store, gateway, *, offset=0, hashes=("HASH",), origin=Origin.VER):
+async def _oneshot_group(store, gateway, *, offset=0, hashes=("HASH",), origin=Origin.VER, ver_chat=3):
     info = logical(2, 10 + offset, text="123456")
-    ver = logical(3, 110 + offset, text="123456")
+    ver = logical(ver_chat, 110 + offset, text="123456")
     occurrence_id = await store.create_occurrence(info, "123456")
     await store.finish_reader(occurrence_id, ReaderStatus.MATCHED, source=info, ver=ver)
     occurrence = await store.get_occurrence(occurrence_id)
@@ -86,16 +86,23 @@ async def test_blacklist_ignores_internal_ver_without_active_group(store, chats)
     assert gateway.deleted == []
 
 
-async def test_blacklist_source_header_reads_info_without_source_access(store, chats) -> None:
-    chats = replace(chats, source=-(10**12 + 1), blacklist=-(10**12 + 8))
+@pytest.mark.parametrize("bucket", [Bucket.BLACKLIST, Bucket.UP])
+@pytest.mark.parametrize("source_role", ["source", "ver"])
+async def test_retained_header_reads_originals_without_source_access(store, chats, bucket, source_role) -> None:
+    chats = replace(chats, source=-(10**12 + 1), ver=-(10**12 + 3), up=-(10**12 + 7), blacklist=-(10**12 + 8))
     gateway = FakeGateway()
-    occurrence_id, target = await _oneshot_group(store, gateway)
+    occurrence_id, target = await _oneshot_group(store, gateway, ver_chat=chats.ver)
+    source_chat = chats.source if source_role == "source" else chats.ver
     raw = TelegramMessage(
         id=800,
-        peer_id=PeerChannel(8),
+        peer_id=PeerChannel(8 if bucket == Bucket.BLACKLIST else 7),
         message="123456",
         media=MessageMediaPhoto(photo=PhotoEmpty(123)),
-        fwd_from=MessageFwdHeader(date=None, from_id=PeerChannel(1), channel_post=999),
+        fwd_from=MessageFwdHeader(
+            date=None,
+            from_id=PeerChannel(1 if source_role == "source" else 3),
+            channel_post=999 if source_role == "source" else 110,
+        ),
     )
     trigger = _logical([raw])
     gateway.add(trigger)
@@ -123,19 +130,34 @@ async def test_blacklist_source_header_reads_info_without_source_access(store, c
     app._register_handlers(chats)
     await app.writer_client.handlers["manual_single"](SimpleNamespace(message=raw, chat_id=trigger.chat_id))
     job = await store.claim_job(("manual",))
-    assert job and job.payload["source_chat_id"] == chats.source
+    assert job and job.payload["source_chat_id"] == source_chat
     await service.process(**job.payload)
 
-    assert gateway.get_logical.await_args_list == [call(trigger.chat_id, [800]), call(chats.info, (10,))]
-    gateway.hash_media.assert_awaited_once_with(trigger, Origin.VER)
+    expected_reads = [call(trigger.chat_id, [800]), call(chats.info, (10,))]
+    if bucket == Bucket.UP:
+        expected_reads.append(call(chats.ver, (110,)))
+    assert gateway.get_logical.await_args_list == expected_reads
+    if source_role == "source":
+        gateway.hash_media.assert_awaited_once_with(trigger, Origin.VER)
+    else:
+        gateway.hash_media.assert_not_awaited()
     gateway.resolve_forward_source.assert_not_awaited()
     gateway.history_page.assert_not_awaited()
-    assert gateway.forwarded[-1] == (logical(chats.info, 10, text="123456"), chats.blacklist)
-    assert gateway.deleted == [(target.chat_id, target.min_id)]
-    assert await store.get_occurrence(occurrence_id) is None
-    assert (await store.known_hashes({"HASH"}))[2] == {"HASH"}
+    if bucket == Bucket.BLACKLIST:
+        assert gateway.forwarded[-1] == (logical(chats.info, 10, text="123456"), chats.blacklist)
+        assert gateway.deleted == [(target.chat_id, target.min_id)]
+        assert await store.get_occurrence(occurrence_id) is None
+        assert (await store.known_hashes({"HASH"}))[2] == {"HASH"}
+    else:
+        assert gateway.forwarded[-2:] == [
+            (logical(chats.info, 10, text="123456"), chats.up),
+            (logical(chats.ver, 110, text="123456"), chats.up),
+        ]
+        assert gateway.deleted == []
+        assert (await store.get_occurrence(occurrence_id)).current_bucket == "up_pending"
+        assert await store.claim_due_merge(0, 0) == (Bucket.UP, {"HASH"})
 
-    # A program-generated forward with the same retained SOURCE header must not loop into MAN.
+    # A program-generated forward retaining the same header must not loop into MAN.
     forwarded_count = len(gateway.forwarded)
     await service.process(**job.payload)
     assert len(gateway.forwarded) == forwarded_count
@@ -156,16 +178,17 @@ async def test_blacklist_hash_lookup_requires_unique_complete_ver_match(store, c
         assert group is None
 
 
-async def test_blacklist_ambiguous_source_resource_routes_to_man_without_deleting(store, chats) -> None:
+@pytest.mark.parametrize("bucket", [Bucket.BLACKLIST, Bucket.UP])
+async def test_ambiguous_source_resource_routes_to_man_without_deleting(store, chats, bucket) -> None:
     gateway = FakeGateway()
     first, _ = await _oneshot_group(store, gateway)
     second, _ = await _oneshot_group(store, gateway, offset=20)
-    trigger = logical(chats.blacklist, 800)
+    trigger = logical(chats.blacklist if bucket == Bucket.BLACKLIST else chats.up, 800)
     gateway.add(trigger)
     gateway.hash_media = AsyncMock(return_value=[Media("HASH", Origin.VER, trigger.chat_id, 800, 0, "video")])
 
     await ManualService(store, gateway, chats).process(
-        Bucket.BLACKLIST,
+        bucket,
         trigger.chat_id,
         trigger.message_ids,
         chats.source,

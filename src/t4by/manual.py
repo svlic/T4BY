@@ -26,6 +26,10 @@ class ManualService:
             ),
             None,
         )
+        if source and any(
+            message.forward_chat_id != source[0] or message.forward_message_id is None for message in logical.messages
+        ):
+            source = None  # Mixed/hidden origins cannot identify one migration safely.
         key = f"{target}:{logical.chat_id}:{logical.grouped_id or logical.min_id}"
         enqueued = await self.store.enqueue_job(
             "manual",
@@ -94,26 +98,28 @@ class ManualService:
             await self.gateway.forward(trigger, self.chats.man)
             return
         group = await self.store.active_group(source_chat_id, source_message_id)
-        if group is None and target == Bucket.BLACKLIST and source_chat_id == self.chats.ver:
+        if group is None and source_chat_id == self.chats.ver:
             occurrence = await self.store.occurrence_for_ver(source_chat_id, (source_message_id,))
             if occurrence is not None:
                 group = await self.store.active_group_for_occurrence(occurrence.occurrence_id)
-        if group is None and target == Bucket.BLACKLIST and source_chat_id == self.chats.source:
+        if group is None and source_chat_id == self.chats.source:
             # Repeated forwards may retain SOURCE rather than VER/ONESHOT identity.
-            # Read only the BLACKLIST copy, then resolve INFO through stored mappings.
+            # Hash only the destination copy; original media comes from INFO/VER.
             media = await self.gateway.hash_media(trigger, Origin.VER)
             hashes = {item.media_hash for item in media}
-            _, _, blacklisted = await self.store.known_hashes(hashes)
-            if hashes and hashes <= blacklisted:
+            _, up, blacklisted = await self.store.known_hashes(hashes)
+            known = up if target == Bucket.UP else blacklisted
+            if hashes and hashes <= known:
                 log.info(
-                    "manual event ignored reason=already_blacklisted trigger=%s/%s",
+                    "manual event ignored reason=already_in_target target=%s trigger=%s/%s",
+                    target,
                     trigger.chat_id,
                     trigger.message_ids,
                 )
                 return
             group = await self.store.active_group_for_ver_hashes(hashes)
         if group is None or group.bucket not in (Bucket.ONESHOT, Bucket.REPEAT):
-            if target == Bucket.BLACKLIST and source_chat_id in (self.chats.info, self.chats.ver):
+            if source_chat_id in (self.chats.info, self.chats.ver):
                 log.info(
                     "manual event ignored reason=internal_forward target=%s trigger=%s/%s source=%s/%s",
                     target,
@@ -135,6 +141,11 @@ class ManualService:
             )
             await self.gateway.forward(trigger, self.chats.man)
             return
+        if target == Bucket.UP:
+            occurrences = [await self.store.get_occurrence(value) for value in group.occurrence_ids]
+            if occurrences and all(item and item.current_bucket == "up_pending" for item in occurrences):
+                log.info("manual event ignored reason=already_up_pending group_id=%s", group.group_id)
+                return
         try:
             destination = self.chats.up if target == Bucket.UP else self.chats.blacklist
             originals = await self._originals(group) if target == Bucket.UP else await self._infos(group)

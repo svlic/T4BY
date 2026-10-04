@@ -80,7 +80,7 @@ class Application:
             chats.blacklist,
         )
         reader_gateway = TelethonGateway(self.reader_client, RpcGates())
-        writer_gateway = TelethonGateway(self.writer_client, RpcGates())
+        writer_gateway = TelethonGateway(self.writer_client, RpcGates(), forbidden_chat=chats.source)
         self.reader = ReaderService(self.store, reader_gateway, chats)
         self.writer = WriterService(self.store, writer_gateway, chats)
         self.manual = ManualService(self.store, writer_gateway, chats)
@@ -127,12 +127,14 @@ class Application:
                 await self.writer.enqueue_ver(_logical([event.message]))
 
         async def manual_event(raw_messages: list[Any], target: Bucket) -> None:
+            # send_media creates albums too, but they are not manual forward commands.
+            if not any(message.fwd_from for message in raw_messages):
+                return
             logical = _logical(raw_messages)
             source_chats = {
                 message.forward_chat_id for message in logical.messages if message.forward_chat_id is not None
             }
-            internal_sources = {chats.info} if target == Bucket.BLACKLIST else {chats.info, chats.ver}
-            if source_chats.intersection(internal_sources):
+            if all(message.forward_chat_id == chats.info for message in logical.messages):
                 log.info(
                     "manual event ignored reason=internal_forward target=%s trigger=%s/%s source_chats=%s",
                     target,

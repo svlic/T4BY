@@ -1,5 +1,8 @@
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, call
 
+import pytest
 from conftest import FakeGateway, logical
 
 from t4by.gateway import RetryAfter
@@ -101,3 +104,41 @@ async def test_flood_wait_is_retried_without_forwarding_to_man(store, chats) -> 
         raise AssertionError("RetryAfter was not propagated to the delayed queue")
 
     assert gateway.forwarded == []
+
+
+@pytest.mark.parametrize("bucket", [Bucket.ONESHOT, Bucket.REPEAT, Bucket.UP, Bucket.BLACKLIST])
+async def test_classification_reads_only_info_ver_despite_source_headers(store, chats, bucket) -> None:
+    gateway = FakeGateway()
+    occurrence, info, ver = await _occurrence(store, "111111", 30)
+    assert occurrence
+    for value in (info, ver):
+        gateway.add(
+            replace(
+                value,
+                messages=tuple(
+                    replace(message, forward_chat_id=chats.source, forward_message_id=999) for message in value.messages
+                ),
+            )
+        )
+    gateway.get_logical = AsyncMock(wraps=gateway.get_logical)
+    gateway.resolve_forward_source = AsyncMock(side_effect=AssertionError("SOURCE access"))
+    gateway.history_page = AsyncMock(side_effect=AssertionError("SOURCE history"))
+    known = {f"h-{chats.ver}-{ver.min_id}"}
+    store.known_hashes = AsyncMock(
+        return_value=(
+            known if bucket != Bucket.ONESHOT else set(),
+            known if bucket == Bucket.UP else set(),
+            known if bucket == Bucket.BLACKLIST else set(),
+        )
+    )
+
+    await WriterService(store, gateway, chats).process(ver.chat_id, ver.message_ids)
+
+    assert gateway.get_logical.await_args_list == [
+        call(chats.ver, ver.message_ids),
+        call(chats.info, info.message_ids),
+    ]
+    gateway.resolve_forward_source.assert_not_awaited()
+    gateway.history_page.assert_not_awaited()
+    assert {item.chat_id for item, _ in gateway.forwarded} <= {chats.info, chats.ver}
+    assert {destination for _, destination in gateway.forwarded} == {getattr(chats, bucket.value)}

@@ -218,9 +218,16 @@ def message_from_telethon(raw: TelethonMessage) -> Message:
 
 
 class TelethonGateway:
-    def __init__(self, client: TelegramClient, gates: RpcGates | None = None) -> None:
+    def __init__(
+        self, client: TelegramClient, gates: RpcGates | None = None, *, forbidden_chat: Chat | None = None
+    ) -> None:
         self.client = client
         self.gates = gates or RpcGates()
+        self.forbidden_chat = forbidden_chat
+
+    def _check_chat(self, chat: Chat) -> None:
+        if self.forbidden_chat is not None and chat == self.forbidden_chat:
+            raise ValueError("writer must not access SOURCE")
 
     async def _call(self, method: str, action: Callable[[], Awaitable[T]], *, chat: Chat | None = None) -> T:
         try:
@@ -229,6 +236,7 @@ class TelethonGateway:
             raise await self.gates.flood(method, error.seconds, chat) from error
 
     async def get_logical(self, chat: Chat, message_ids: Sequence[int]) -> LogicalMessage:
+        self._check_chat(chat)
         async with self.gates.controlled("get_messages"):
             raw = await self._call("get_messages", lambda: self.client.get_messages(chat, ids=list(message_ids)))
         values = [item for item in (raw if isinstance(raw, list) else [raw]) if item]
@@ -240,6 +248,7 @@ class TelethonGateway:
         return logical[0]
 
     async def _whole_album(self, chat: Chat, message_id: int) -> LogicalMessage:
+        self._check_chat(chat)
         async with self.gates.controlled("get_messages"):
             center = await self._call("get_messages", lambda: self.client.get_messages(chat, ids=message_id))
             if center is None:
@@ -278,6 +287,7 @@ class TelethonGateway:
         return await self._whole_album(*ref) if ref else None
 
     async def history_page(self, chat: Chat, anchor_id: int, *, newer: bool, limit: int = 60) -> list[Message]:
+        self._check_chat(chat)
         async with self.gates.historical():
 
             async def collect() -> list[TelethonMessage]:
@@ -288,6 +298,8 @@ class TelethonGateway:
         return [message_from_telethon(item) for item in raw]
 
     async def forward(self, source: LogicalMessage, destination: Chat) -> LogicalMessage:
+        self._check_chat(source.chat_id)
+        self._check_chat(destination)
         async with self.gates.writing(destination, "forward"):
             raw = await self._call(
                 "forward",
@@ -298,6 +310,7 @@ class TelethonGateway:
         return LogicalMessage(values[0].chat_id, tuple(message_from_telethon(item) for item in values))
 
     async def hash_media(self, logical: LogicalMessage, origin: Origin) -> list[Media]:
+        self._check_chat(logical.chat_id)
         result: list[Media] = []
         for order, message in enumerate(logical.media_messages):
             large = message.media_size is not None and message.media_size >= 20 * 1024 * 1024
@@ -337,6 +350,9 @@ class TelethonGateway:
         return result
 
     async def send_media(self, destination: Chat, media: Sequence[Media], caption: str) -> LogicalMessage:
+        self._check_chat(destination)
+        for item in media:
+            self._check_chat(item.chat_id)
         if not media:
             raise ValueError("cannot send an empty media group")
         references = []
@@ -369,6 +385,9 @@ class TelethonGateway:
     async def _upload_fallback(
         self, destination: Chat, media: Sequence[Media], caption: str
     ) -> TelethonMessage | list[TelethonMessage]:
+        self._check_chat(destination)
+        for item in media:
+            self._check_chat(item.chat_id)
         with tempfile.TemporaryDirectory(prefix="t4by-upload-") as directory:
             paths: list[str] = []
             for index, item in enumerate(media):
@@ -402,6 +421,7 @@ class TelethonGateway:
     async def delete(self, messages: Sequence[tuple[int, int]]) -> None:
         by_chat: dict[int, list[int]] = defaultdict(list)
         for chat_id, message_id in messages:
+            self._check_chat(chat_id)
             by_chat[chat_id].append(message_id)
         for chat_id, message_ids in by_chat.items():
             async with self.gates.writing(chat_id, "delete"):

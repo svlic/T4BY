@@ -1,4 +1,12 @@
-from t4by.app import _resolve_chats
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+from conftest import FakeGateway
+from telethon.tl.types import Message, MessageFwdHeader, PeerChannel
+
+from t4by.app import Application, _logical, _resolve_chats
+from t4by.manual import ManualService
 
 
 class Client:
@@ -28,3 +36,49 @@ async def test_resolve_chats_uses_reader_only_for_source(chats) -> None:
         chats.up,
         chats.blacklist,
     ]
+
+
+@pytest.mark.parametrize("sources", [None, (2, 2), (2, 1), (1, None)])
+async def test_manual_albums_ignore_outputs_and_reject_mixed_origins(store, chats, sources) -> None:
+    chats = replace(chats, info=-(10**12 + 2), up=-(10**12 + 7))
+
+    class EventClient:
+        def __init__(self):
+            self.handlers = {}
+
+        def on(self, event):
+            def register(handler):
+                self.handlers[handler.__name__] = handler
+                return handler
+
+            return register
+
+    raw = [
+        Message(
+            id=800 + index,
+            peer_id=PeerChannel(7),
+            message="123456",
+            grouped_id=700,
+            fwd_from=MessageFwdHeader(date=None, from_id=PeerChannel(source), channel_post=100 + index)
+            if source
+            else None,
+        )
+        for index, source in enumerate(sources or (None, None))
+    ]
+    gateway = FakeGateway()
+    trigger = _logical(raw)
+    gateway.add(trigger)
+    app = object.__new__(Application)
+    app.reader_client = EventClient()
+    app.writer_client = EventClient()
+    app.manual = ManualService(store, gateway, chats)
+    app._register_handlers(chats)
+    await app.writer_client.handlers["manual_album"](SimpleNamespace(messages=raw, chat_id=chats.up))
+    job = await store.claim_job(("manual",))
+    if sources in (None, (2, 2)):
+        assert job is None
+    else:
+        assert job and job.payload["source_chat_id"] is None
+        await app.manual.process(**job.payload)
+        assert gateway.forwarded == [(trigger, chats.man)]
+        assert gateway.deleted == []
