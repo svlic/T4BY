@@ -740,6 +740,24 @@ class Store:
         ).fetchone()
         return await self.group_data(row["group_id"]) if row else None
 
+    async def active_group_for_ver_hashes(self, hashes: set[str]) -> GroupData | None:
+        if not hashes:
+            return None
+        placeholders = ",".join("?" for _ in hashes)
+        rows = await (
+            await self._database().execute(
+                f"""SELECT g.group_id FROM bucket_groups g
+                    JOIN group_occurrences o USING(group_id)
+                    JOIN occurrence_media m USING(occurrence_id)
+                    WHERE g.status='active' AND g.bucket IN ('oneshot','repeat')
+                      AND m.origin='ver' AND m.media_hash IN ({placeholders})
+                    GROUP BY g.group_id HAVING count(DISTINCT m.media_hash)=?""",
+                (*hashes, len(hashes)),
+            )
+        ).fetchall()
+        # A forwarded resource can occur in multiple groups. Never choose an arbitrary one.
+        return await self.group_data(rows[0]["group_id"]) if len(rows) == 1 else None
+
     async def group_data(self, group_id: str) -> GroupData:
         db = self._database()
         group = await (await db.execute("SELECT * FROM bucket_groups WHERE group_id=?", (group_id,))).fetchone()

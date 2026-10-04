@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 from .config import Chats
 from .gateway import RetryAfter, TelegramGateway
-from .models import Bucket, LogicalMessage
+from .models import Bucket, LogicalMessage, Origin
 from .storage import GroupData, Store
 
 log = logging.getLogger(__name__)
@@ -98,6 +98,20 @@ class ManualService:
             occurrence = await self.store.occurrence_for_ver(source_chat_id, (source_message_id,))
             if occurrence is not None:
                 group = await self.store.active_group_for_occurrence(occurrence.occurrence_id)
+        if group is None and target == Bucket.BLACKLIST and source_chat_id == self.chats.source:
+            # Repeated forwards may retain SOURCE rather than VER/ONESHOT identity.
+            # Read only the BLACKLIST copy, then resolve INFO through stored mappings.
+            media = await self.gateway.hash_media(trigger, Origin.VER)
+            hashes = {item.media_hash for item in media}
+            _, _, blacklisted = await self.store.known_hashes(hashes)
+            if hashes and hashes <= blacklisted:
+                log.info(
+                    "manual event ignored reason=already_blacklisted trigger=%s/%s",
+                    trigger.chat_id,
+                    trigger.message_ids,
+                )
+                return
+            group = await self.store.active_group_for_ver_hashes(hashes)
         if group is None or group.bucket not in (Bucket.ONESHOT, Bucket.REPEAT):
             if target == Bucket.BLACKLIST and source_chat_id in (self.chats.info, self.chats.ver):
                 log.info(
