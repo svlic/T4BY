@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import chain
 
-CODE_RE = re.compile(r"(?<!\d)\d{6}(?!\d)")
+CODE_RE = re.compile(r"(?<!\d)\d{6,7}(?!\d)")
 
 
 class Bucket(StrEnum):
@@ -92,8 +92,8 @@ def extract_code(text: str) -> str | None:
 
 
 def contains_code(text: str, code: str) -> bool:
-    if len(code) != 6 or not code.isdigit():
-        raise ValueError("code must contain exactly six digits")
+    if len(code) not in (6, 7) or not code.isdigit():
+        raise ValueError("code must contain exactly six or seven digits")
     return re.search(rf"(?<!\d){re.escape(code)}(?!\d)", text) is not None
 
 

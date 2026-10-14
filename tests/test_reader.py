@@ -1,7 +1,24 @@
 from conftest import FakeGateway, logical
 
-from t4by.models import Message
+from t4by.models import Message, extract_code
 from t4by.reader import find_source_match
+
+
+async def test_matches_seven_digit_code_instead_of_parenthesized_date() -> None:
+    gateway = FakeGateway()
+    code = extract_code("编号： 2636937 （261014）")
+    assert code == "2636937"
+    source = logical(1, 100)
+    gateway.history[(True, 100)] = [
+        Message(1, 101, text="编号：261014 (验证视频)"),
+        Message(1, 102, text="编号：26369370 (验证视频)"),
+        Message(1, 103, text="编号：2636937 (验证视频)"),
+    ]
+
+    result = await find_source_match(gateway, source, code)
+
+    assert result is not None
+    assert result.message_ids == (103,)
 
 
 async def test_searches_newer_first_and_stops_before_older() -> None:

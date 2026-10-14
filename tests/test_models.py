@@ -11,11 +11,22 @@ from t4by.models import (
 )
 
 
-def test_extracts_first_independent_six_digit_code() -> None:
+def test_extracts_first_independent_six_or_seven_digit_code() -> None:
     assert extract_code("编号： 566494 （260928）") == "566494"
-    assert extract_code("x1234567 y") is None
+    assert (
+        extract_code("编号： 2636937 （261014）\n➡️ 点击查询验证视频 ⬅️\n⭐️ 点击收藏该资源 ⭐️\n昵称：kiss313")
+        == "2636937"
+    )
+    assert extract_code("编号：2636937 (验证视频)") == "2636937"
+    assert extract_code("x1234567 y") == "1234567"
+    assert extract_code("x12345678 y") is None
+    assert extract_code("12345") is None
     assert contains_code("a 123456 b", "123456")
     assert not contains_code("a 0123456 b", "123456")
+    assert contains_code("编号：2636937 (验证视频)", "2636937")
+    assert not contains_code("编号：26369370", "2636937")
+    assert not contains_code("编号：02636937", "2636937")
+    assert not contains_code("编号：636937", "2636937")
 
 
 def test_collapses_album_as_one_logical_message() -> None:
